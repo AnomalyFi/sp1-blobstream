@@ -1106,6 +1106,7 @@ dependencies = [
  "futures",
  "hex",
  "log",
+ "nodekit_seq_sdk",
  "primitives",
  "reqwest 0.11.27",
  "serde",
@@ -1445,6 +1446,17 @@ name = "constant_time_eq"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f7144d30dcf0fafbce74250a3963025d8d52177934239851c917d29f1df280c2"
+
+[[package]]
+name = "context"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0adf149597f6e75ab7c41ec360dd1a74c86667cf0ef09bd3c207d508665f60e8"
+dependencies = [
+ "cc",
+ "libc",
+ "winapi",
+]
 
 [[package]]
 name = "convert_case"
@@ -3293,6 +3305,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "nodekit_seq_sdk"
+version = "0.2.0"
+dependencies = [
+ "async-trait",
+ "base64 0.13.1",
+ "bytes",
+ "context",
+ "http 0.2.12",
+ "reqwest 0.11.27",
+ "serde",
+ "serde_bytes_ng",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "nohash-hasher"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4889,6 +4917,15 @@ name = "serde_bytes"
 version = "0.11.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8b8497c313fd43ab992087548117643f6fcd935cbf36f176ffda0aacf9591734"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "serde_bytes_ng"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bdb0ebce8684e2253f964e8b6ce51f0ccc6666bbb448fb4a6788088bda6544b6"
 dependencies = [
  "serde",
 ]

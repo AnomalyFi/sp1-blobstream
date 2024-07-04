@@ -7,12 +7,14 @@ use alloy::{
     },
     signers::local::PrivateKeySigner,
     sol,
+    sol_types::SolValue,
     transports::http::{Client, Http},
 };
 use anyhow::Result;
 use blobstream_script::util::TendermintRPCClient;
 use blobstream_script::{relay, TendermintProver};
 use log::{error, info};
+use nodekit_seq_sdk::client::jsonrpc_client;
 use primitives::get_header_update_verdict;
 use sp1_sdk::{ProverClient, SP1PlonkBn254Proof, SP1ProvingKey, SP1Stdin};
 use std::env;
@@ -57,6 +59,11 @@ sol! {
         address public verifier;
 
         function commitHeaderRange(bytes calldata proof, bytes calldata publicValues) external;
+    }
+
+    struct CommitHeaderRangeInput{
+        bytes proof;
+        bytes publicValues;
     }
 }
 
@@ -123,47 +130,80 @@ impl SP1BlobstreamOperator {
 
     /// Relay a header range proof to the SP1 Blobstream contract.
     async fn relay_header_range(&self, proof: SP1PlonkBn254Proof) -> Result<()> {
+        // proof.proof.public_inputs[1];
+        //@todo pass public_value_bytes, decode and use the values, sha256 hash and bithsift it to get the digest.
+        // let vkey_hash = BigUint::from_str(&proof.proof.public_inputs[0])?;
+        // let committed_values_digest = BigUint::from_str(&proof.public_inputs[1])?;
         // TODO: sp1_sdk should return empty bytes in mock mode.
-        let proof_as_bytes = if env::var("SP1_PROVER").unwrap().to_lowercase() == "mock" {
-            vec![]
-        } else {
-            let proof_str = proof.bytes();
-            // Strip the 0x prefix from proof_str, if it exists.
-            hex::decode(proof_str.replace("0x", "")).unwrap()
-        };
+        // let proof_as_bytes = if env::var("SP1_PROVER").unwrap().to_lowercase() == "mock" {
+        //     vec![]
+        // } else {
+        //     // @todo version has been specifically appended here in the proof.bytes() and uses encoded proof.
+        //     // we have encoded proof and raw proof. encoded proof is for verifying esp on evm chains. raw proof is for genric verification.
+        //     // @todo we need to choose here, what type of proof we are going to use.
+        //     // Most of the changes will be done in this file itself.
+        //     // @todo decide on how to use the verifier and circuit.
+
+        //     //@todo better not to use solidity encoded proof. use raw proof. but make size comparisions between raw proof and encoded proof.
+        //     //@todo vkeyhash is sha256 hash of vkey.
+        //     let proof_str = proof.bytes();
+        //     // Strip the 0x prefix from proof_str, if it exists.
+        //     hex::decode(proof_str.replace("0x", "")).unwrap()
+        // };
         let public_values_bytes = proof.public_values.to_vec();
+        let client = jsonrpc_client::JSONRPCClient::new(
+            env::var("RPC_URL").unwrap().as_str(),
+            env::var("NETWORK_ID").unwrap().parse::<u32>().unwrap(),
+            env::var("CHAIN_ID").unwrap(),
+        )
+        .unwrap();
+        let input = CommitHeaderRangeInput {
+            proof: proof.proof.raw_proof.into(),
+            publicValues: public_values_bytes.into(),
+        };
+        let tx_reply = client
+            .submit_transact_tx(
+                env::var("CHAIN_ID").unwrap(),
+                env::var("NETWORK_ID").unwrap().parse::<u32>().unwrap(),
+                String::from("commit_header_range"),
+                env::var("CONTRACT_ADDRESS").unwrap(),
+                input.abi_encode(),
+            )
+            .unwrap();
 
-        let contract = SP1Blobstream::new(self.contract_address, self.wallet_filler.clone());
+        //@todo remove this and change to SEQ
+        // let contract = SP1Blobstream::new(self.contract_address, self.wallet_filler.clone());
 
-        let gas_limit = relay::get_gas_limit(self.chain_id);
-        let max_fee_per_gas = relay::get_fee_cap(self.chain_id, self.wallet_filler.root()).await;
+        // let gas_limit = relay::get_gas_limit(self.chain_id);
+        // let max_fee_per_gas = relay::get_fee_cap(self.chain_id, self.wallet_filler.root()).await;
 
-        let nonce = self
-            .wallet_filler
-            .get_transaction_count(self.relayer_address)
-            .await?;
+        // let nonce = self
+        //     .wallet_filler
+        //     .get_transaction_count(self.relayer_address)
+        //     .await?;
 
-        // Wait for 3 required confirmations with a timeout of 60 seconds.
-        const NUM_CONFIRMATIONS: u64 = 3;
-        const TIMEOUT_SECONDS: u64 = 60;
-        let receipt = contract
-            .commitHeaderRange(proof_as_bytes.into(), public_values_bytes.into())
-            .gas_price(max_fee_per_gas)
-            .gas(gas_limit)
-            .nonce(nonce)
-            .send()
-            .await?
-            .with_required_confirmations(NUM_CONFIRMATIONS)
-            .with_timeout(Some(Duration::from_secs(TIMEOUT_SECONDS)))
-            .get_receipt()
-            .await?;
+        // // Wait for 3 required confirmations with a timeout of 60 seconds.
+        // const NUM_CONFIRMATIONS: u64 = 3;
+        // const TIMEOUT_SECONDS: u64 = 60;
+        // // @todo this proof_as_bytes consist of packaged proof
+        // let receipt = contract
+        //     .commitHeaderRange(proof_as_bytes.into(), public_values_bytes.into())
+        //     .gas_price(max_fee_per_gas)
+        //     .gas(gas_limit)
+        //     .nonce(nonce)
+        //     .send()
+        //     .await?
+        //     .with_required_confirmations(NUM_CONFIRMATIONS)
+        //     .with_timeout(Some(Duration::from_secs(TIMEOUT_SECONDS)))
+        //     .get_receipt()
+        //     .await?;
 
-        // If status is false, it reverted.
-        if !receipt.status() {
-            error!("Transaction reverted!");
-        }
+        // // If status is false, it reverted.
+        // if !receipt.status() {
+        //     error!("Transaction reverted!");
+        // }
 
-        info!("Transaction hash: {:?}", receipt.transaction_hash);
+        info!("Transaction ID: {:?}", tx_reply.tx_id);
 
         Ok(())
     }
@@ -176,13 +216,27 @@ impl SP1BlobstreamOperator {
     ) -> Result<()> {
         info!("Starting SP1 Blobstream operator");
         let mut fetcher = TendermintRPCClient::default();
-
+        let rpc_url = env::var("RPC_URL").expect("RPC_URL not set");
+        let network_id = env::var("NETWORK_ID")
+            .unwrap()
+            .parse::<u32>()
+            .expect("NETWORK_ID not set");
+        let chain_id = env::var("CHAIN_ID").expect("CHAIN_ID not set");
+        let address = env::var("ADDRESS").expect("ADDRESS not set");
+        let storage_slot = env::var("STORAGE_SLOT")
+            .unwrap()
+            .parse::<u64>()
+            .expect("STORAGE_SLOT not set");
         loop {
-            let contract = SP1Blobstream::new(self.contract_address, self.wallet_filler.clone());
-
+            let client =
+                jsonrpc_client::JSONRPCClient::new(rpc_url.as_str(), network_id, chain_id.clone())
+                    .unwrap();
             // Get the latest block from the contract.
-            let current_block = contract.latestBlock().call().await?.latestBlock;
-
+            let slot_data = client
+                .get_storage_slot_data(address.clone(), storage_slot)
+                .unwrap();
+            let cb_data: [u8; 8] = slot_data.data[0..8].try_into().unwrap();
+            let current_block = u64::from_be_bytes(cb_data);
             // Get the head of the chain.
             let latest_tendermint_block_nb = fetcher.get_latest_block_height().await;
 
