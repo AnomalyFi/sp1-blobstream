@@ -3,7 +3,7 @@ use alloy::{
     primitives::Address,
     providers::{
         fillers::{ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller, WalletFiller},
-        Identity, Provider, ProviderBuilder, RootProvider,
+        Identity, ProviderBuilder, RootProvider,
     },
     signers::local::PrivateKeySigner,
     sol,
@@ -12,14 +12,14 @@ use alloy::{
 };
 use anyhow::Result;
 use blobstream_script::util::TendermintRPCClient;
-use blobstream_script::{relay, TendermintProver};
+use blobstream_script::TendermintProver;
 use log::{error, info};
 use nodekit_seq_sdk::client::jsonrpc_client;
 use primitives::get_header_update_verdict;
 use sp1_sdk::{ProverClient, SP1PlonkBn254Proof, SP1ProvingKey, SP1Stdin};
 use std::env;
 use std::sync::Arc;
-use std::time::Duration;
+
 use tendermint_light_client_verifier::Verdict;
 
 const ELF: &[u8] = include_bytes!("../../program/elf/riscv32im-succinct-zkvm-elf");
@@ -36,6 +36,7 @@ type EthereumFillProvider = FillProvider<
     Ethereum,
 >;
 
+#[allow(dead_code)]
 struct SP1BlobstreamOperator {
     client: ProverClient,
     pk: SP1ProvingKey,
@@ -130,26 +131,6 @@ impl SP1BlobstreamOperator {
 
     /// Relay a header range proof to the SP1 Blobstream contract.
     async fn relay_header_range(&self, proof: SP1PlonkBn254Proof) -> Result<()> {
-        // proof.proof.public_inputs[1];
-        //@todo pass public_value_bytes, decode and use the values, sha256 hash and bithsift it to get the digest.
-        // let vkey_hash = BigUint::from_str(&proof.proof.public_inputs[0])?;
-        // let committed_values_digest = BigUint::from_str(&proof.public_inputs[1])?;
-        // TODO: sp1_sdk should return empty bytes in mock mode.
-        // let proof_as_bytes = if env::var("SP1_PROVER").unwrap().to_lowercase() == "mock" {
-        //     vec![]
-        // } else {
-        //     // @todo version has been specifically appended here in the proof.bytes() and uses encoded proof.
-        //     // we have encoded proof and raw proof. encoded proof is for verifying esp on evm chains. raw proof is for genric verification.
-        //     // @todo we need to choose here, what type of proof we are going to use.
-        //     // Most of the changes will be done in this file itself.
-        //     // @todo decide on how to use the verifier and circuit.
-
-        //     //@todo better not to use solidity encoded proof. use raw proof. but make size comparisions between raw proof and encoded proof.
-        //     //@todo vkeyhash is sha256 hash of vkey.
-        //     let proof_str = proof.bytes();
-        //     // Strip the 0x prefix from proof_str, if it exists.
-        //     hex::decode(proof_str.replace("0x", "")).unwrap()
-        // };
         let public_values_bytes = proof.public_values.to_vec();
         let client = jsonrpc_client::JSONRPCClient::new(
             env::var("RPC_URL").unwrap().as_str(),
@@ -157,8 +138,12 @@ impl SP1BlobstreamOperator {
             env::var("CHAIN_ID").unwrap(),
         )
         .unwrap();
+        // blobstream wasm smart contract deployed on SEQ takes CommitHeaderRangeInput as input.
         let input = CommitHeaderRangeInput {
+            // raw proof is used to verify the plonk proof in gnark.
+            // solidity verifier uses encoded proof, packed by first 4 bytes with sp1 version identefier.
             proof: proof.proof.raw_proof.into(),
+            // public value bytes are same as the public inputs accepted/used during proof generation.
             publicValues: public_values_bytes.into(),
         };
         let tx_reply = client
@@ -171,38 +156,7 @@ impl SP1BlobstreamOperator {
             )
             .unwrap();
 
-        //@todo remove this and change to SEQ
-        // let contract = SP1Blobstream::new(self.contract_address, self.wallet_filler.clone());
-
-        // let gas_limit = relay::get_gas_limit(self.chain_id);
-        // let max_fee_per_gas = relay::get_fee_cap(self.chain_id, self.wallet_filler.root()).await;
-
-        // let nonce = self
-        //     .wallet_filler
-        //     .get_transaction_count(self.relayer_address)
-        //     .await?;
-
-        // // Wait for 3 required confirmations with a timeout of 60 seconds.
-        // const NUM_CONFIRMATIONS: u64 = 3;
-        // const TIMEOUT_SECONDS: u64 = 60;
-        // // @todo this proof_as_bytes consist of packaged proof
-        // let receipt = contract
-        //     .commitHeaderRange(proof_as_bytes.into(), public_values_bytes.into())
-        //     .gas_price(max_fee_per_gas)
-        //     .gas(gas_limit)
-        //     .nonce(nonce)
-        //     .send()
-        //     .await?
-        //     .with_required_confirmations(NUM_CONFIRMATIONS)
-        //     .with_timeout(Some(Duration::from_secs(TIMEOUT_SECONDS)))
-        //     .get_receipt()
-        //     .await?;
-
-        // // If status is false, it reverted.
-        // if !receipt.status() {
-        //     error!("Transaction reverted!");
-        // }
-
+        // @todo check the transaction status and act accordingly.
         info!("Transaction ID: {:?}", tx_reply.tx_id);
 
         Ok(())
