@@ -15,10 +15,11 @@ use blobstream_script::util::TendermintRPCClient;
 use blobstream_script::TendermintProver;
 use log::{error, info};
 use nodekit_seq_sdk::client::jsonrpc_client;
-use primitives::get_header_update_verdict;
+use primitives::{get_header_update_verdict, types::ProofInputs};
+use serde::{Deserialize, Serialize};
 use sp1_sdk::{ProverClient, SP1PlonkBn254Proof, SP1ProvingKey, SP1Stdin};
-use std::env;
 use std::sync::Arc;
+use std::{env, fs::File, io::Write};
 
 use tendermint_light_client_verifier::Verdict;
 
@@ -44,6 +45,14 @@ struct SP1BlobstreamOperator {
     contract_address: Address,
     relayer_address: Address,
     chain_id: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct HelperForJsonFileOutput {
+    #[serde(rename = "proof")]
+    proof: SP1PlonkBn254Proof,
+    #[serde(rename = "publicValues")]
+    proof_inputs: ProofInputs,
 }
 
 sol! {
@@ -125,8 +134,18 @@ impl SP1BlobstreamOperator {
 
         let encoded_proof_inputs = serde_cbor::to_vec(&inputs)?;
         stdin.write_vec(encoded_proof_inputs);
-
-        self.client.prove_plonk(&self.pk, stdin)
+        let proof = self.client.prove_plonk(&self.pk, stdin).unwrap();
+        let helper_output = HelperForJsonFileOutput {
+            proof: proof.clone(),
+            proof_inputs: inputs,
+        };
+        let json_output = serde_json::to_string(&helper_output).unwrap();
+        let file_name = format!("proof_{}_{}.json", trusted_block, target_block);
+        // Create a file and write the data
+        let mut file = File::create(file_name).expect("Unable to create file");
+        file.write_all(json_output.as_bytes())
+            .expect("Unable to write data");
+        Ok(proof)
     }
 
     /// Relay a header range proof to the SP1 Blobstream contract.
