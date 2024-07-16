@@ -1,15 +1,4 @@
-use alloy::{
-    network::{Ethereum, EthereumWallet},
-    primitives::Address,
-    providers::{
-        fillers::{ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller, WalletFiller},
-        Identity, ProviderBuilder, RootProvider,
-    },
-    signers::local::PrivateKeySigner,
-    sol,
-    sol_types::SolValue,
-    transports::http::{Client, Http},
-};
+use alloy::{sol, sol_types::SolValue};
 use anyhow::Result;
 use blobstream_script::util::TendermintRPCClient;
 use blobstream_script::TendermintProver;
@@ -19,33 +8,19 @@ use primitives::get_header_update_verdict;
 use serde::{Deserialize, Serialize};
 use sp1_recursion_gnark_ffi::PlonkBn254Proof;
 use sp1_sdk::{ProverClient, SP1PlonkBn254Proof, SP1ProvingKey, SP1Stdin, SP1VerifyingKey};
-use std::sync::Arc;
+
 use std::{env, fs::File, io::Write};
 
 use tendermint_light_client_verifier::Verdict;
 
 const ELF: &[u8] = include_bytes!("../../program/elf/riscv32im-succinct-zkvm-elf");
 
-/// Alias the fill provider for the Ethereum network. Retrieved from the instantiation of the
-/// ProviderBuilder. Recommended method for passing around a ProviderBuilder.
-type EthereumFillProvider = FillProvider<
-    JoinFill<
-        JoinFill<JoinFill<JoinFill<Identity, GasFiller>, NonceFiller>, ChainIdFiller>,
-        WalletFiller<EthereumWallet>,
-    >,
-    RootProvider<Http<Client>>,
-    Http<Client>,
-    Ethereum,
->;
-
 #[allow(dead_code)]
 struct SP1BlobstreamOperator {
     client: ProverClient,
     pk: SP1ProvingKey,
-    wallet_filler: Arc<EthereumFillProvider>,
-    contract_address: Address,
-    relayer_address: Address,
-    chain_id: u64,
+    rpc_client: jsonrpc_client::JSONRPCClient,
+    address: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -57,21 +32,6 @@ struct HelperForJsonFileOutput {
 }
 
 sol! {
-    #[allow(missing_docs)]
-    #[sol(rpc)]
-    contract SP1Blobstream {
-        bool public frozen;
-        uint64 public latestBlock;
-        uint256 public state_proofNonce;
-        mapping(uint64 => bytes32) public blockHeightToHeaderHash;
-        mapping(uint256 => bytes32) public state_dataCommitments;
-        uint64 public constant DATA_COMMITMENT_MAX = 10000;
-        bytes32 public blobstreamProgramVkey;
-        address public verifier;
-
-        function commitHeaderRange(bytes calldata proof, bytes calldata publicValues) external;
-    }
-
     struct CommitHeaderRangeInput{
         bytes proof;
         bytes publicValues;
@@ -84,35 +44,20 @@ impl SP1BlobstreamOperator {
 
         let client = ProverClient::new();
         let (pk, _) = client.setup(ELF);
-        let chain_id: u64 = env::var("CHAIN_ID")
-            .expect("CHAIN_ID not set")
-            .parse()
-            .unwrap();
-        let rpc_url = env::var("RPC_URL")
-            .expect("RPC_URL not set")
-            .parse()
-            .unwrap();
 
-        let private_key = env::var("PRIVATE_KEY").expect("PRIVATE_KEY not set");
-        let contract_address = env::var("CONTRACT_ADDRESS")
-            .expect("CONTRACT_ADDRESS not set")
-            .parse()
-            .unwrap();
-        let signer: PrivateKeySigner = private_key.parse().expect("Failed to parse private key");
-        let relayer_address = signer.address();
-        let wallet = EthereumWallet::from(signer);
-        let provider = ProviderBuilder::new()
-            .with_recommended_fillers()
-            .wallet(wallet)
-            .on_http(rpc_url);
+        let rpc_client = jsonrpc_client::JSONRPCClient::new(
+            env::var("RPC_URL").unwrap().as_str(),
+            env::var("NETWORK_ID").unwrap().parse::<u32>().unwrap(),
+            env::var("CHAIN_ID").unwrap(),
+        )
+        .unwrap();
 
+        let address = env::var("ADDRESS").expect("ADDRESS not set");
         Self {
             client,
             pk,
-            wallet_filler: Arc::new(provider),
-            chain_id,
-            contract_address,
-            relayer_address,
+            rpc_client,
+            address,
         }
     }
 
@@ -152,12 +97,6 @@ impl SP1BlobstreamOperator {
     /// Relay a header range proof to the SP1 Blobstream contract.
     async fn relay_header_range(&self, proof: SP1PlonkBn254Proof) -> Result<()> {
         let public_values_bytes = proof.public_values.to_vec();
-        let client = jsonrpc_client::JSONRPCClient::new(
-            env::var("RPC_URL").unwrap().as_str(),
-            env::var("NETWORK_ID").unwrap().parse::<u32>().unwrap(),
-            env::var("CHAIN_ID").unwrap(),
-        )
-        .unwrap();
         // blobstream wasm smart contract deployed on SEQ takes CommitHeaderRangeInput as input.
         let input = CommitHeaderRangeInput {
             // raw proof is used to verify the plonk proof in gnark.
@@ -166,12 +105,11 @@ impl SP1BlobstreamOperator {
             // public value bytes are same as the public inputs accepted/used during proof generation.
             publicValues: public_values_bytes.into(),
         };
-        let tx_reply = client
+        let tx_reply = self
+            .rpc_client
             .submit_transact_tx(
-                env::var("CHAIN_ID").unwrap(),
-                env::var("NETWORK_ID").unwrap().parse::<u32>().unwrap(),
                 String::from("commit_header_range"),
-                env::var("CONTRACT_ADDRESS").unwrap(),
+                self.address.clone(),
                 input.abi_encode(),
             )
             .unwrap();
@@ -189,24 +127,16 @@ impl SP1BlobstreamOperator {
     ) -> Result<()> {
         info!("Starting SP1 Blobstream operator");
         let mut fetcher = TendermintRPCClient::default();
-        let rpc_url = env::var("RPC_URL").expect("RPC_URL not set");
-        let network_id = env::var("NETWORK_ID")
-            .unwrap()
-            .parse::<u32>()
-            .expect("NETWORK_ID not set");
-        let chain_id = env::var("CHAIN_ID").expect("CHAIN_ID not set");
-        let address = env::var("ADDRESS").expect("ADDRESS not set");
-        let storage_slot = env::var("STORAGE_SLOT")
+
+        let storage_slot = env::var("STORAGE_SLOT_LATEST_BLOCK")
             .unwrap()
             .parse::<u64>()
-            .expect("STORAGE_SLOT not set");
+            .expect("STORAGE_SLOT_LATEST_BLOCK not set");
         loop {
-            let client =
-                jsonrpc_client::JSONRPCClient::new(rpc_url.as_str(), network_id, chain_id.clone())
-                    .unwrap();
             // Get the latest block from the contract.
-            let slot_data = client
-                .get_storage_slot_data(address.clone(), storage_slot)
+            let slot_data = self
+                .rpc_client
+                .get_storage_slot_data(self.address.clone(), storage_slot.to_be_bytes().to_vec())
                 .unwrap();
             let cb_data: [u8; 8] = slot_data.data[0..8].try_into().unwrap();
             let current_block = u64::from_be_bytes(cb_data);

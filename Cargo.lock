@@ -3309,7 +3309,7 @@ dependencies = [
 [[package]]
 name = "nodekit_seq_sdk"
 version = "0.2.0"
-source = "git+https://github.com/AnomalyFi/rust-seq-sdk?tag=v0.0.1#126b7f617186fe057f5b2820a490a4ad79df8b26"
+source = "git+https://github.com/AnomalyFi/rust-seq-sdk?tag=v0.0.3#af9fd894df308da0a3fe5516d43eb9cdbf7a12e1"
 dependencies = [
  "async-trait",
  "base64 0.13.1",
