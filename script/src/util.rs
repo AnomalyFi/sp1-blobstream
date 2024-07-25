@@ -326,3 +326,20 @@ impl TendermintRPCClient {
         B256::from_slice(light_block.signed_header.header.hash().as_bytes())
     }
 }
+
+pub fn get_dynamic_state_slots(
+    current_height: u64,
+    target_height: u64,
+    mut nonce_bytes: Vec<u8>,
+) -> Vec<Vec<u8>> {
+    let mut key1 = current_height.to_be_bytes().to_vec();
+    let mut slot1 = 1u32.to_be_bytes().to_vec();
+    slot1.append(&mut key1);
+    let mut key2 = target_height.to_be_bytes().to_vec();
+    let mut slot2 = 1u32.to_be_bytes().to_vec();
+    slot2.append(&mut key2);
+    let mut slot3 = 2u32.to_be_bytes().to_vec();
+    slot3.append(&mut nonce_bytes);
+
+    vec![slot1, slot2, slot3]
+}

@@ -1,6 +1,6 @@
 use alloy::{sol, sol_types::SolValue};
 use anyhow::Result;
-use blobstream_script::util::TendermintRPCClient;
+use blobstream_script::util::{get_dynamic_state_slots, TendermintRPCClient};
 use blobstream_script::TendermintProver;
 use log::{error, info};
 use nodekit_seq_sdk::client::jsonrpc_client;
@@ -52,7 +52,7 @@ impl SP1BlobstreamOperator {
         )
         .unwrap();
 
-        let address = env::var("ADDRESS").expect("ADDRESS not set");
+        let address = env::var("CONTRACT_ADDRESS").expect("ADDRESS not set");
         Self {
             client,
             pk,
@@ -95,7 +95,12 @@ impl SP1BlobstreamOperator {
     }
 
     /// Relay a header range proof to the SP1 Blobstream contract.
-    async fn relay_header_range(&self, proof: SP1PlonkBn254Proof) -> Result<()> {
+    async fn relay_header_range(
+        &self,
+        proof: SP1PlonkBn254Proof,
+        current_height: u64,
+        target_height: u64,
+    ) -> Result<()> {
         let public_values_bytes = proof.public_values.to_vec();
         // blobstream wasm smart contract deployed on SEQ takes CommitHeaderRangeInput as input.
         let input = CommitHeaderRangeInput {
@@ -105,12 +110,19 @@ impl SP1BlobstreamOperator {
             // public value bytes are same as the public inputs accepted/used during proof generation.
             publicValues: public_values_bytes.into(),
         };
+        let nonce_bytes = self
+            .rpc_client
+            .get_storage_slot_data(self.address.clone(), 4u32.to_be_bytes().to_vec())
+            .unwrap()
+            .data;
+
         let tx_reply = self
             .rpc_client
             .submit_transact_tx(
                 String::from("commit_header_range"),
                 self.address.clone(),
                 input.abi_encode(),
+                get_dynamic_state_slots(current_height, target_height, nonce_bytes),
             )
             .unwrap();
 
@@ -130,7 +142,7 @@ impl SP1BlobstreamOperator {
 
         let storage_slot = env::var("STORAGE_SLOT_LATEST_BLOCK")
             .unwrap()
-            .parse::<u64>()
+            .parse::<u32>()
             .expect("STORAGE_SLOT_LATEST_BLOCK not set");
         loop {
             // Get the latest block from the contract.
@@ -168,7 +180,8 @@ impl SP1BlobstreamOperator {
                 // Request a header range if the target block is not the next block.
                 match self.request_header_range(current_block, target_block).await {
                     Ok(proof) => {
-                        self.relay_header_range(proof).await?;
+                        self.relay_header_range(proof, current_block, target_block)
+                            .await?;
                     }
                     Err(e) => {
                         error!("Header range request failed: {}", e);
